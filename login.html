@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#11151f" /><title>Sign in · Ticketly</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" /><link rel="stylesheet" href="/auth.css" />
+</head><body class="auth-page">
+  <main class="auth-layout">
+    <section class="auth-art" aria-label="Live music crowd"><a class="brand auth-brand" href="/" aria-label="Ticketly home"><span class="brand-mark"><span></span><span></span><span></span></span><span class="brand-name">ticketly</span></a><div class="auth-art-copy"><span class="auth-kicker">YOUR NIGHTS, ALL IN ONE PLACE</span><h1><span id="time-greeting">Good evening</span><br />start <em>here.</em></h1><p>Keep your plans close. Your tickets are waiting when you are.</p></div><div class="auth-art-foot"><span class="auth-pulse"></span> Find the feeling. Keep the memory.</div></section>
+    <section class="auth-panel"><a href="/" class="auth-back">← Back to events</a><div class="auth-box">
+      <div class="auth-eyebrow">TICKETLY ACCOUNT</div><h2 id="auth-title">Welcome back.</h2><p class="auth-subtitle" id="auth-subtitle">Sign in to get back to the good stuff.</p>
+      <div class="auth-tabs" role="tablist"><button type="button" id="signin-tab" class="auth-tab active" role="tab" aria-selected="true">Sign in</button><button type="button" id="signup-tab" class="auth-tab" role="tab" aria-selected="false">Create account</button></div>
+      <form id="auth-form"><label class="auth-field"><span>Email address</span><input id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required /></label><label class="auth-field"><span>Password</span><input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required minlength="8" /></label><div id="turnstile-container" class="turnstile-container" hidden><div id="turnstile-widget"></div></div>
+            <button class="auth-forgot" id="forgot-password" type="button">Forgot password?</button><button class="auth-submit" id="auth-submit" type="submit">Sign in <span>↗</span></button></form>
+      <form id="recovery-form" hidden><label class="auth-field"><span>New password</span><input id="new-password" type="password" autocomplete="new-password" minlength="8" required placeholder="At least 8 characters" /></label><button class="auth-submit" type="submit">Update password <span>↗</span></button></form>
+      <div class="auth-message" id="auth-message" role="status" aria-live="polite" hidden></div>
+      <p class="auth-terms">By continuing, you agree to Ticketly’s <a href="/terms.html">Terms</a> and <a href="/privacy.html">Privacy Policy</a>.</p>
+      <p class="auth-footnote">Your account and saved ticket details are protected by Supabase authentication and database access policies.</p>
+    </div></section>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script><script src="/config.js"></script><script src="/supabase-client.js"></script><script src="/login.js"></script>
+</body></html>
