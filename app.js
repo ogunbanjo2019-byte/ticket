@@ -1,159 +1,202 @@
-let events = [];
-let liveEventCount = 0;
-const grid = document.querySelector('#events-grid');
-const emptyState = document.querySelector('#empty-state');
-const resultCount = document.querySelector('#result-count');
-const searchForm = document.querySelector('#search-form');
-const searchInput = document.querySelector('#search-input');
-const locationFilter = document.querySelector('#location-filter');
-const dateFilter = document.querySelector('#date-filter');
-const categoryFilter = document.querySelector('#category-filter');
-const toast = document.querySelector('#toast');
-const liveStatus = document.querySelector('#live-status');
-const ticketModal = document.querySelector('#ticket-modal');
-const ticketForm = document.querySelector('#ticket-form');
-const ticketList = document.querySelector('#purchased-ticket-list');
-const barcodeInput = document.querySelector('#ticket-barcode');
-const scannerVideo = document.querySelector('#barcode-video');
+const $ = (selector) => document.querySelector(selector);
 const apiBase = String(window.TICKETLY_API_BASE_URL || '').replace(/\/$/, '');
+const eventsList = $('#events-list');
+const emptyState = $('#empty-state');
+const toast = $('#toast');
+let allEvents = [];
+let activeCategory = 'all';
 let toastTimer;
-let cameraStream;
-let scannerFrame;
+let currentEvent = null;
+let cameraStream = null;
+let scannerFrame = null;
+const favoriteStore = 'ticketly-followed-events-v1';
+const favorites = new Set(JSON.parse(localStorage.getItem(favoriteStore) || '[]'));
 
+function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
 function apiUrl(path) { return `${apiBase}${path}`; }
-function categoryFromSegment(segment = '') {
-  const value = segment.toLowerCase();
-  if (value.includes('sport')) return 'Sports';
-  if (value.includes('arts') || value.includes('theatre') || value.includes('theater') || value.includes('comedy')) return 'Theater';
-  if (value.includes('family')) return 'Family';
-  return 'Pop';
+function showToast(message) { toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 3200); }
+function getCountry() { return $('#country-select').value; }
+function categoryOf(item) {
+  const segment = item.classifications?.find((entry) => entry.primary)?.segment?.name || item.classifications?.[0]?.segment?.name || 'Live event';
+  if (/sport/i.test(segment)) return 'Sports';
+  if (/comedy/i.test(segment)) return 'Comedy';
+  if (/family/i.test(segment)) return 'Family';
+  if (/arts|theatre|theater/i.test(segment)) return 'Arts & Theatre';
+  if (/music|rock|pop|country|jazz|hip.?hop|rap|r&b|metal|alternative|folk|blues|reggae|latin/i.test(segment)) return 'Concerts';
+  return segment;
 }
-function liveEventFromApi(item) {
+function mapEvent(item) {
   const start = item.dates?.start || {};
   const venue = item._embedded?.venues?.[0] || {};
-  const dateObject = start.localDate ? new Date(`${start.localDate}T${start.localTime || '12:00:00'}`) : new Date();
-  const classification = item.classifications?.find((entry) => entry.primary) || item.classifications?.[0];
-  return {
-    title: item.name || 'Live event', venue: venue.name || 'Venue details on provider page',
-    city: venue.city?.name || 'Location on provider page', category: categoryFromSegment(classification?.segment?.name),
-    dateLabel: dateObject.toLocaleDateString('en-US', { month: 'short' }).toUpperCase(),
-    date: String(dateObject.getDate()).padStart(2, '0'), dateType: [0, 6].includes(dateObject.getDay()) ? 'weekend' : 'month',
-    time: start.localTime ? new Date(`1970-01-01T${start.localTime}`).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'Time TBA',
-    price: item.priceRanges?.[0]?.min ? `From $${Math.round(item.priceRanges[0].min)}` : 'See tickets',
-    image: item.images?.find((image) => image.ratio === '16_9')?.url || item.images?.[0]?.url || '', live: true, url: item.url || '#',
-    eventDate: start.localDate || ''
-  };
+  const date = start.localDate || '';
+  const dateObject = date ? new Date(`${date}T12:00:00`) : null;
+  const image = item.images?.find((candidate) => candidate.ratio === '16_9' && candidate.width >= 600)?.url || item.images?.[0]?.url || '';
+  return { id: item.id, title: item.name || 'Live event', venue: venue.name || 'Venue details on provider page', city: [venue.city?.name, venue.country?.name].filter(Boolean).join(', ') || 'Location on provider page', category: categoryOf(item), date, dateLabel: dateObject ? dateObject.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Date TBA', time: start.localTime ? new Date(`1970-01-01T${start.localTime}`).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'Time TBA', image, url: item.url || '', priceRange: item.priceRanges?.[0] || null };
 }
-async function loadLiveEvents() {
+function updateCount() { const badge = $('#saved-count'); badge.textContent = String(favorites.size); badge.hidden = !favorites.size; }
+function renderEvents() {
+  const term = $('#search-input').value.trim().toLowerCase();
+  const filtered = allEvents.filter((event) => (!term || `${event.title} ${event.venue} ${event.city} ${event.category}`.toLowerCase().includes(term)) && (activeCategory === 'all' || event.category.toLowerCase().includes(activeCategory.toLowerCase())));
+  eventsList.innerHTML = filtered.map((event) => {
+    const index = allEvents.indexOf(event);
+    const picture = event.image ? `<img src="${escapeHtml(event.image)}" alt="" loading="lazy" />` : '';
+    return `<article class="event-card"><div class="event-thumb">${picture}<span class="event-date">${escapeHtml(event.dateLabel)}</span></div><div class="event-info"><p class="event-type">${escapeHtml(event.category)}</p><h3>${escapeHtml(event.title)}</h3><p>${escapeHtml(event.venue)}</p><p>${escapeHtml(event.city)} · ${escapeHtml(event.time)}</p><div class="event-actions"><button type="button" data-details="${index}">Event details</button><button type="button" class="save-event ${favorites.has(event.id) ? 'saved' : ''}" data-favorite="${index}" aria-label="${favorites.has(event.id) ? 'Unfollow' : 'Follow'} ${escapeHtml(event.title)}">${favorites.has(event.id) ? '♥ Following' : '♡ Follow'}</button></div></div></article>`;
+  }).join('');
+  emptyState.hidden = filtered.length !== 0;
+  $('#result-count').textContent = filtered.length ? `${filtered.length} listing${filtered.length === 1 ? '' : 's'}` : 'No listings';
+  eventsList.querySelectorAll('[data-details]').forEach((button) => button.addEventListener('click', () => openEventDetails(allEvents[Number(button.dataset.details)])));
+  eventsList.querySelectorAll('[data-favorite]').forEach((button) => button.addEventListener('click', () => toggleFavorite(allEvents[Number(button.dataset.favorite)])));
+}
+function toggleFavorite(event) {
+  if (favorites.has(event.id)) favorites.delete(event.id); else favorites.add(event.id);
+  localStorage.setItem(favoriteStore, JSON.stringify([...favorites]));
+  updateCount(); renderEvents(); renderMyEvents();
+  showToast(favorites.has(event.id) ? 'Event added to your followed list.' : 'Event removed from your followed list.');
+}
+function setFeatured(event) {
+  if (!event) return;
+  $('#feature-title').textContent = event.title;
+  $('#feature-meta').textContent = `${event.dateLabel} · ${event.venue} · ${event.city}`;
+  $('#feature-category').textContent = event.category.toUpperCase();
+  const image = $('#feature-image');
+  image.src = event.image || 'https://images.unsplash.com/photo-1524368535928-5b5e00ddc76b?auto=format&fit=crop&w=1400&q=85';
+  image.alt = event.image ? `Event listing: ${event.title}` : '';
+  $('#feature-link').onclick = (click) => { click.preventDefault(); openEventDetails(event); };
+}
+async function loadEvents() {
+  const status = $('#live-status');
+  status.textContent = 'Loading event listings…';
+  const params = new URLSearchParams({ countryCode: getCountry(), size: '24' });
+  const city = $('#city-input').value.trim();
+  const keyword = $('#search-input').value.trim();
+  if (city) params.set('city', city);
+  if (keyword) params.set('keyword', keyword);
+  const classifications = { Concerts: 'Music', Sports: 'Sports', Comedy: 'Comedy', Family: 'Family', 'Arts & Theatre': 'Theatre' };
+  if (activeCategory !== 'all' && classifications[activeCategory]) params.set('classificationName', classifications[activeCategory]);
   try {
-    const response = await fetch(apiUrl('/api/live-events?size=24&countryCode=US'));
+    const response = await fetch(apiUrl(`/api/live-events?${params}`));
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || 'Live events are unavailable.');
-    events = (payload.events || []).map(liveEventFromApi).filter((event) => event.url !== '#');
-    liveEventCount = events.length;
-    liveStatus.textContent = payload.configured === false ? 'Live listings need backend provider setup' : `${liveEventCount} live events loaded`;
-    if (liveEventCount) liveStatus.classList.add('live-status-active');
-    renderEvents();
+    if (!response.ok) throw new Error(payload.error || 'Event listings are unavailable.');
+    allEvents = (payload.events || []).map(mapEvent).filter((event) => event.url);
+    status.textContent = payload.configured === false ? 'Add a Discovery API key to load listings' : `${allEvents.length} provider event listing${allEvents.length === 1 ? '' : 's'}`;
+    status.parentElement.querySelector('i').style.background = allEvents.length ? '#42d499' : '#ffb33d';
+    if (allEvents.length) setFeatured(allEvents[0]);
+    renderEvents(); renderMyEvents();
   } catch (error) {
-    liveStatus.textContent = 'Live event service unavailable';
-    console.warn(error.message);
-    renderEvents();
+    status.textContent = 'Event listings unavailable';
+    allEvents = []; renderEvents(); renderMyEvents();
+    console.warn('Event discovery unavailable:', error.message);
   }
 }
-function eventCard(event) {
-  const tagClass = event.category.toLowerCase();
-  const action = `<a class="event-link event-ticket-button live-ticket-link" href="${event.url}" target="_blank" rel="noopener noreferrer">Official tickets <span>↗</span></a>`;
-  return `<article class="event-card live-event-card"><div class="event-image">${event.image ? `<img src="${event.image}" alt="${event.title}" loading="lazy" />` : ''}<span class="event-tag ${tagClass}">${event.category}</span><span class="live-badge">LIVE</span><span class="event-date"><small>${event.dateLabel}</small><strong>${event.date}</strong></span></div><div class="event-details"><h3>${event.title}</h3><span class="event-venue">${event.venue}</span><span class="event-location">${event.city} · ${event.time}</span><div class="event-footer"><span class="event-price"><strong>${event.price}</strong></span>${action}</div><small class="provider-note">Official provider link · opens in a new tab</small><button type="button" class="save-event-button" data-save-event="${events.indexOf(event)}">Add purchased ticket details</button></div></article>`;
+function openEventDetails(event) {
+  currentEvent = event;
+  $('#dialog-title').textContent = event.title;
+  $('#dialog-category').textContent = event.category.toUpperCase();
+  $('#dialog-meta').textContent = `${event.dateLabel} · ${event.venue} · ${event.city} · ${event.time}`;
+  const image = $('#dialog-image'); image.src = event.image || ''; image.alt = event.image ? event.title : '';
+  const provider = $('#dialog-provider-link');
+  provider.href = event.url || '#';
+  provider.onclick = (click) => { if (!event.url) { click.preventDefault(); showToast('The official ticket link is not available for this listing.'); } };
+  $('#dialog-save-button').onclick = () => { closeEventDetails(); openTicketForm(event); };
+  $('#event-dialog').hidden = false; document.body.style.overflow = 'hidden'; $('#dialog-close')?.focus();
 }
-function getFilteredEvents() {
-  const term = searchInput.value.trim().toLowerCase();
-  const city = locationFilter.value, date = dateFilter.value, category = categoryFilter.value;
-  return events.filter((event) => `${event.title} ${event.venue} ${event.city} ${event.category}`.toLowerCase().includes(term) && (city === 'all' || event.city === city) && (date === 'all' || event.dateType === date) && (category === 'all' || event.category === category));
+function closeEventDetails() { $('#event-dialog').hidden = true; document.body.style.overflow = ''; }
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach((screen) => { screen.hidden = screen.id !== id; });
+  document.querySelectorAll('.bottom-link').forEach((link) => link.classList.toggle('selected', link.dataset.screen === id));
+  if (id === 'my-events') renderMyEvents();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
-function renderEvents() {
-  const filtered = getFilteredEvents();
-  grid.innerHTML = filtered.map(eventCard).join('');
-  emptyState.hidden = filtered.length > 0;
-  resultCount.innerHTML = `Showing <strong>${filtered.length}</strong> ${filtered.length === 1 ? 'event' : 'events'}${liveEventCount ? ` <span class="live-count">· ${liveEventCount} live</span>` : ''}`;
-  grid.querySelectorAll('[data-save-event]').forEach((button) => button.addEventListener('click', () => openTicketForm(events[Number(button.dataset.saveEvent)])));
+async function getSession() {
+  if (!window.ticketlySupabase) return null;
+  const { data } = await window.ticketlySupabase.auth.getSession();
+  return data.session || null;
 }
-function showToast(message) {
-  toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 3500);
+async function renderMyEvents() {
+  const host = $('#my-events-list');
+  if (!host) return;
+  const followed = [...favorites].map((id) => allEvents.find((event) => event.id === id)).filter(Boolean);
+  let ticketCards = [];
+  const session = await getSession();
+  $('#login-my-events').hidden = Boolean(session);
+  if (session) {
+    const { data, error } = await window.ticketlySupabase.from('purchased_tickets').select('id,event_title,venue,event_date,quantity,barcode').order('event_date', { ascending: true, nullsFirst: false });
+    if (!error) ticketCards = data || [];
+    else console.warn('Could not load saved tickets:', error.message);
+  }
+  const followedHtml = followed.map((event) => `<article class="saved-event-card"><div><h3>${escapeHtml(event.title)}</h3><p>${escapeHtml(event.dateLabel)} · ${escapeHtml(event.venue)}</p></div><button type="button" data-open-saved="${escapeHtml(event.id)}">View listing</button></article>`).join('');
+  const ticketsHtml = ticketCards.map((ticket) => `<article class="saved-event-card"><div><p class="event-type">PURCHASED TICKET DETAILS · ${Number(ticket.quantity) || 1} TICKET(S)</p><h3>${escapeHtml(ticket.event_title)}</h3><p>${escapeHtml(ticket.venue)}${ticket.event_date ? ` · ${escapeHtml(ticket.event_date)}` : ''}${ticket.barcode ? ` · Code ending ${escapeHtml(ticket.barcode.slice(-4))}` : ''}</p></div><div class="ticket-card-actions"><a class="secondary-button" href="/account.html#account-tickets">Manage</a><button type="button" data-issuer-action>Transfer / sell</button></div></article>`).join('');
+  const signInNote = !session ? '<div class="saved-event-empty">Sign in to see the purchased ticket details saved to your account.</div>' : (!ticketCards.length ? '<div class="saved-event-empty">No purchased ticket details saved yet. Add details for a ticket you already bought.</div>' : '');
+  host.innerHTML = `${followedHtml}${ticketsHtml}${signInNote}`;
+  host.querySelectorAll('[data-open-saved]').forEach((button) => button.addEventListener('click', () => { const event = allEvents.find((item) => item.id === button.dataset.openSaved); if (event) openEventDetails(event); else showToast('Refresh event listings to view this event.'); }));
+  host.querySelectorAll('[data-issuer-action]').forEach((button) => button.addEventListener('click', () => showToast('Ticket transfer or resale must be completed through the original ticket issuer.')));
 }
-async function openTicketForm(event = {}) {
-  if (!window.ticketlySupabase) { showToast(window.ticketlySupabaseSetupError || 'Account service is not configured.'); return; }
-  const { data: { session } } = await window.ticketlySupabase.auth.getSession();
-  if (!session) { location.assign('/login.html?next=' + encodeURIComponent('/account.html')); return; }
-  ticketForm.reset();
-  document.querySelector('#ticket-event').value = event.title || '';
-  document.querySelector('#ticket-venue').value = event.venue || '';
-  document.querySelector('#ticket-date').value = event.eventDate || '';
-  ticketModal.hidden = false;
-  document.body.classList.add('modal-open');
-  window.setTimeout(() => document.querySelector('#ticket-event').focus(), 50);
+function openTicketForm(event = null) {
+  if (!window.ticketlySupabase) { showToast(window.ticketlySupabaseSetupError || 'Connect Supabase and sign in to save ticket details.'); location.assign('/login.html?next=%2Faccount.html'); return; }
+  getSession().then((session) => {
+    if (!session) { location.assign('/login.html?next=%2Faccount.html'); return; }
+    const form = $('#ticket-form'); form.reset();
+    if (event) { form.elements.title.value = event.title; form.elements.venue.value = event.venue; form.elements.date.value = event.date || ''; }
+    $('#ticket-dialog').hidden = false; document.body.style.overflow = 'hidden';
+  });
 }
-function closeTicketModal() {
-  stopScanner(); ticketModal.hidden = true; document.body.classList.remove('modal-open');
+function closeTicketDialog() { stopScanner(); $('#ticket-dialog').hidden = true; document.body.style.overflow = ''; }
+function stopScanner() { if (scannerFrame) cancelAnimationFrame(scannerFrame); scannerFrame = null; if (cameraStream) cameraStream.getTracks().forEach((track) => track.stop()); cameraStream = null; $('#scan-video').hidden = true; }
+async function scanLoop() {
+  const video = $('#scan-video');
+  if (!cameraStream || video.readyState < 2) { scannerFrame = requestAnimationFrame(scanLoop); return; }
+  try {
+    const detector = new BarcodeDetector({ formats: ['qr_code', 'code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'data_matrix', 'pdf417'] });
+    const codes = await detector.detect(video);
+    if (codes[0]) { $('#ticket-form').elements.barcode.value = codes[0].rawValue; stopScanner(); showToast('Code captured only. It has not been validated.'); return; }
+  } catch (error) { console.warn('Barcode detection error:', error); }
+  scannerFrame = requestAnimationFrame(scanLoop);
 }
-ticketModal.querySelectorAll('[data-close-ticket]').forEach((element) => element.addEventListener('click', closeTicketModal));
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !ticketModal.hidden) closeTicketModal(); });
-ticketForm.addEventListener('submit', async (event) => {
+async function saveTicket(event) {
   event.preventDefault();
   const client = window.ticketlySupabase;
-  if (!client) return showToast(window.ticketlySupabaseSetupError || 'Account service is not configured.');
-  const { data: { session } } = await client.auth.getSession();
-  if (!session) { location.assign('/login.html?next=' + encodeURIComponent('/account.html')); return; }
-  const data = new FormData(ticketForm);
+  if (!client) return showToast(window.ticketlySupabaseSetupError || 'Supabase is not configured.');
+  const session = await getSession();
+  if (!session) { location.assign('/login.html?next=%2Faccount.html'); return; }
+  const data = new FormData(event.currentTarget);
   const record = { user_id: session.user.id, event_title: String(data.get('title')).trim(), venue: String(data.get('venue')).trim(), event_date: data.get('date') || null, quantity: Number(data.get('quantity')), barcode: String(data.get('barcode') || '').trim() || null };
-  const button = ticketForm.querySelector('[type="submit"]'); button.disabled = true;
+  const button = event.currentTarget.querySelector('[type="submit"]'); button.disabled = true;
   const { error } = await client.from('purchased_tickets').insert(record);
   button.disabled = false;
   if (error) { showToast(error.message); return; }
-  renderPurchasedTickets(); closeTicketModal(); showToast('Ticket details saved to your account.');
-});
-async function renderPurchasedTickets() {
-  const client = window.ticketlySupabase;
-  if (!client) { ticketList.innerHTML = '<div class="empty-tickets"><h3>Sign in to see your tickets</h3><p>Set up Supabase account credentials to save your ticket details securely.</p><a class="outline-button" href="/login.html">Sign in or create account</a></div>'; return; }
-  const { data: { session } } = await client.auth.getSession();
-  if (!session) { ticketList.innerHTML = '<div class="empty-tickets"><h3>Your tickets, all together.</h3><p>Sign in to see saved tickets or add details for a ticket you purchased.</p><a class="outline-button" href="/login.html">Sign in or create account</a></div>'; return; }
-  const { data, error } = await client.from('purchased_tickets').select('id,event_title,venue,event_date,quantity,barcode').order('event_date', { ascending: true, nullsFirst: false });
-  if (error) { ticketList.innerHTML = `<div class="empty-tickets"><h3>Tickets are unavailable</h3><p>${escapeHtml(error.message)}. Ensure the setup SQL has been run.</p></div>`; return; }
-  const tickets = data || [];
-  ticketList.innerHTML = tickets.length ? tickets.map((ticket) => `<article class="purchased-ticket"><div><span class="card-kicker">SAVED TICKET · ${ticket.quantity} ${ticket.quantity === 1 ? 'ticket' : 'tickets'}</span><h3>${escapeHtml(ticket.event_title)}</h3><p>${escapeHtml(ticket.venue)}${ticket.event_date ? ` · ${escapeHtml(ticket.event_date)}` : ''}</p>${ticket.barcode ? `<small>Barcode on file · ending ${escapeHtml(ticket.barcode.slice(-4))}</small>` : '<small>No barcode added</small>'}</div><button type="button" class="remove-ticket" data-remove-ticket="${ticket.id}">Open account</button></article>`).join('') : '<div class="empty-tickets"><h3>No tickets saved yet</h3><p>Add details for a ticket you have already purchased.</p><button type="button" class="outline-button" id="add-first-ticket">Add a ticket</button></div>';
-  ticketList.querySelectorAll('[data-remove-ticket]').forEach((button) => button.addEventListener('click', () => location.assign('/account.html#account-tickets')));
-  document.querySelector('#add-first-ticket')?.addEventListener('click', () => openTicketForm());
+  closeTicketDialog(); showToast('Purchased ticket details saved privately.'); await renderMyEvents();
 }
-function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
-function stopScanner() { if (scannerFrame) cancelAnimationFrame(scannerFrame); scannerFrame = null; if (cameraStream) cameraStream.getTracks().forEach((track) => track.stop()); cameraStream = null; scannerVideo.hidden = true; }
-async function scanFrame() {
-  if (!cameraStream || scannerVideo.readyState < 2) { scannerFrame = requestAnimationFrame(scanFrame); return; }
-  try {
-    const detector = new BarcodeDetector({ formats: ['qr_code', 'code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'data_matrix', 'pdf417'] });
-    const codes = await detector.detect(scannerVideo);
-    if (codes.length) { barcodeInput.value = codes[0].rawValue; stopScanner(); showToast('Code captured. Save the ticket details to keep it.'); return; }
-  } catch (error) { console.warn('Barcode scan frame failed', error); }
-  scannerFrame = requestAnimationFrame(scanFrame);
-}
-document.querySelector('#start-barcode-scan').addEventListener('click', async () => {
-  if (!('BarcodeDetector' in window)) { showToast('Camera barcode scanning is not supported here. Enter the barcode manually.'); return; }
-  try { cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } }); scannerVideo.srcObject = cameraStream; scannerVideo.hidden = false; await scannerVideo.play(); scannerFrame = requestAnimationFrame(scanFrame); }
-  catch { showToast('Camera access unavailable. Allow camera access over HTTPS or enter the code manually.'); }
+$('#search-form').addEventListener('submit', (event) => { event.preventDefault(); activeCategory = activeCategory || 'all'; loadEvents(); });
+$('#clear-search').addEventListener('click', () => { $('#search-input').value = ''; $('#search-input').focus(); loadEvents(); });
+$('#clear-filters').addEventListener('click', () => { $('#search-input').value = ''; $('#city-input').value = ''; activeCategory = 'all'; document.querySelectorAll('.pill').forEach((pill) => pill.classList.toggle('active', pill.dataset.category === 'all')); loadEvents(); });
+$('#country-select').addEventListener('change', () => { $('#country-label').textContent = getCountry(); loadEvents(); });
+$('#city-input').addEventListener('change', loadEvents);
+document.querySelectorAll('.pill').forEach((pill) => pill.addEventListener('click', () => { activeCategory = pill.dataset.category; document.querySelectorAll('.pill').forEach((item) => item.classList.toggle('active', item === pill)); loadEvents(); }));
+document.querySelectorAll('.bottom-link').forEach((button) => button.addEventListener('click', async () => {
+  if (button.dataset.screen === 'account-screen') {
+    const session = await getSession();
+    location.assign(session ? '/account.html' : '/login.html');
+    return;
+  }
+  showScreen(button.dataset.screen);
+}));
+$('#saved-nav').addEventListener('click', () => showScreen('my-events'));
+$('#add-ticket-button').addEventListener('click', () => openTicketForm());
+$('#ticket-form').addEventListener('submit', saveTicket);
+document.querySelectorAll('[data-close-dialog]').forEach((button) => button.addEventListener('click', closeEventDetails));
+document.querySelectorAll('[data-close-ticket]').forEach((button) => button.addEventListener('click', closeTicketDialog));
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeEventDetails(); closeTicketDialog(); } });
+$('#start-scan').addEventListener('click', async () => {
+  if (!('BarcodeDetector' in window)) return showToast('Camera scanning is unsupported here. You can enter the code manually.');
+  try { cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } }); const video = $('#scan-video'); video.srcObject = cameraStream; video.hidden = false; await video.play(); scannerFrame = requestAnimationFrame(scanLoop); }
+  catch { showToast('Allow camera access over HTTPS, or enter the barcode manually.'); }
 });
-searchForm.addEventListener('submit', (event) => { event.preventDefault(); renderEvents(); document.querySelector('#events').scrollIntoView({ behavior: 'smooth', block: 'start' }); showToast(`${getFilteredEvents().length} ${getFilteredEvents().length === 1 ? 'event' : 'events'} found.`); });
-[locationFilter, dateFilter, categoryFilter].forEach((control) => control.addEventListener('change', renderEvents));
-document.querySelector('#clear-filters').addEventListener('click', () => { searchInput.value = ''; locationFilter.value = 'all'; dateFilter.value = 'all'; categoryFilter.value = 'all'; renderEvents(); });
-document.querySelectorAll('.trend-card').forEach((card) => card.addEventListener('click', () => { categoryFilter.value = card.dataset.category; renderEvents(); document.querySelector('#events').scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
-document.querySelectorAll('.city-card').forEach((card) => card.addEventListener('click', () => { locationFilter.value = card.dataset.city; renderEvents(); document.querySelector('#events').scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
-document.querySelectorAll('[data-scroll]').forEach((button) => button.addEventListener('click', () => document.querySelector(`#${button.dataset.target}`).scrollBy({ left: button.dataset.scroll === 'next' ? 350 : -350, behavior: 'smooth' })));
-document.querySelector('#view-all').addEventListener('click', () => { searchInput.value = ''; locationFilter.value = 'all'; dateFilter.value = 'all'; categoryFilter.value = 'all'; renderEvents(); showToast('Showing all live events.'); });
-document.querySelectorAll('[data-toast]').forEach((button) => button.addEventListener('click', () => showToast(button.dataset.toast)));
-document.querySelector('.search-toggle').addEventListener('click', () => { document.querySelector('#search-input').focus(); document.querySelector('.hero').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
-document.querySelector('#add-ticket-nav').addEventListener('click', () => openTicketForm());
-document.querySelector('#purchased-nav').addEventListener('click', () => { if (window.ticketlySupabase) window.ticketlySupabase.auth.getSession().then(({ data }) => location.assign(data.session ? '/account.html#account-tickets' : '/login.html?next=%2Faccount.html')); else location.assign('/login.html'); });
-const accountLink = document.querySelector('#account-link');
-if (window.ticketlySupabase) window.ticketlySupabase.auth.getSession().then(({ data }) => { if (data.session) { accountLink.textContent = 'My account'; accountLink.href = '/account.html'; document.querySelector('#mobile-account-link').textContent = 'My account'; document.querySelector('#mobile-account-link').href = '/account.html'; } });
-const menuButton = document.querySelector('.menu-button'); const mobileNav = document.querySelector('#mobile-nav');
-menuButton.addEventListener('click', () => { const open = mobileNav.classList.toggle('open'); menuButton.setAttribute('aria-expanded', String(open)); });
-mobileNav.querySelectorAll('a').forEach((link) => link.addEventListener('click', () => { mobileNav.classList.remove('open'); menuButton.setAttribute('aria-expanded', 'false'); }));
-renderPurchasedTickets(); renderEvents(); loadLiveEvents();
+(async () => {
+  updateCount();
+  if (window.ticketlySupabase) {
+    const session = await getSession();
+    if (session) { $('#account-link').textContent = (session.user.email || 'Account').slice(0, 1).toUpperCase(); $('#account-link').href = '/account.html'; }
+    window.ticketlySupabase.auth.onAuthStateChange(() => renderMyEvents());
+  }
+  await loadEvents();
+})();
